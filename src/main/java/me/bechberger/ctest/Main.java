@@ -108,7 +108,7 @@ public class Main implements Runnable {
     enum GC implements OptionAdder, CSVValue {
         G1("G1GC"),
         ZGC("ZGC"),
-        SHENANDOAH("ShenandoahGC"),
+       // SHENANDOAH("ShenandoahGC"),
         SERIAL("SerialGC"),
         PARALLEL("ParallelGC");
 
@@ -161,8 +161,8 @@ public class Main implements Runnable {
     List<MaxChunkSize> maxChunkSizes = List.of(MaxChunkSize.values());
 
     enum HeapSize implements OptionAdder {
-        DEFAULT(""),
-        ONE_GB("1g"),;
+        DEFAULT(""),;
+        //ONE_GB("1g"),;
 
         public final String size;
 
@@ -259,6 +259,10 @@ public class Main implements Runnable {
                 System.err.println("Error during execution: " + result + " for " + options);
             }
             System.out.println(result.toCSV());
+            try {
+                Path.of(csvFile).toFile().createNewFile();
+            } catch (IOException e) {
+            }
             try (var s = Files.newOutputStream(Path.of(csvFile), StandardOpenOption.APPEND)) {
                 s.write((String.join(",", result.toCSV()) + "\n").getBytes());
             }
