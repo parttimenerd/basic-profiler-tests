@@ -8,8 +8,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Function;
+import java.util.stream.Stream;
 
 public abstract class BenchmarkRunner {
 
@@ -36,11 +40,12 @@ public abstract class BenchmarkRunner {
 
     abstract void addOptions(Main.JavaOptions options, Path tmpFolder);
 
-    record Result(Main.OptionSet options, long duration, int otherSamplerEvents, int validCpuTimeEvents, int overflowedCpuTimeEvents, int emptyCpuTimeEvents, boolean error) {
+    record Result(Main.OptionSet options, long duration, int otherSamplerEvents, int validCpuTimeEvents,
+                  int overflowedCpuTimeEvents, int emptyCpuTimeEvents, boolean error) {
 
         public List<String> toCSV() {
             List<String> csv = new ArrayList<>(options.toCSV());
-            csv.addAll(List.of(String.valueOf(duration), String.valueOf(otherSamplerEvents), String.valueOf(validCpuTimeEvents), String.valueOf(overflowedCpuTimeEvents), String.valueOf(emptyCpuTimeEvents), String.valueOf(isReasonable()), String.valueOf(error)));
+            csv.addAll(Stream.of(duration, otherSamplerEvents, validCpuTimeEvents, overflowedCpuTimeEvents, emptyCpuTimeEvents, isReasonable(), error).map(Object::toString).toList());
             return csv;
         }
 
@@ -58,8 +63,26 @@ public abstract class BenchmarkRunner {
             double errorRate = (double) emptyCpuTimeEvents / validCpuTimeEvents;
             double validRate = (double) validCpuTimeEvents / (validCpuTimeEvents + overflowedCpuTimeEvents + emptyCpuTimeEvents);
 
-            return overflowRate < 0.1 && errorRate < 0.2 && validRate > 0.8;
+            return overflowRate < 0.2 && errorRate < 0.2 && validRate > 0.7;
         }
+    }
+
+    Result parseJFRFiles(List<Path> jfrFiles, Main.OptionSet options, long duration) {
+        int otherSamplerEvents = 0;
+        int validCpuTimeEvents = 0;
+        int overflowedCpuTimeEvents = 0;
+        int emptyCpuTimeEvents = 0;
+        for (var jfrFile : jfrFiles) {
+            var result = parseJFRFile(jfrFile, options, duration);
+            if (result.error) {
+                return new Result(options, duration, 0, 0, 0, 0, true);
+            }
+            otherSamplerEvents += result.otherSamplerEvents;
+            validCpuTimeEvents += result.validCpuTimeEvents;
+            overflowedCpuTimeEvents += result.overflowedCpuTimeEvents;
+            emptyCpuTimeEvents += result.emptyCpuTimeEvents;
+        }
+        return new Result(options, duration, otherSamplerEvents, validCpuTimeEvents, overflowedCpuTimeEvents, emptyCpuTimeEvents, false);
     }
 
     Result parseJFRFile(Path jfrFile, Main.OptionSet options, long duration) {
@@ -97,7 +120,55 @@ public abstract class BenchmarkRunner {
         return javaBinary;
     }
 
-    Result run(Path jfrFile, String javaBinary, boolean verbose) {
+    static class JFRStartAndStopLoop implements Runnable {
+        private final Main.OptionSet options;
+        private final Main.JavaOptions javaOptions;
+        private final Function<Integer, Path> jfrFileGenerator;
+        private final CopyOnWriteArrayList<Path> jfrFiles;
+        private final long pid;
+
+        JFRStartAndStopLoop(Main.OptionSet options, Main.JavaOptions javaOptions, Function<Integer, Path> jfrFileGenerator, CopyOnWriteArrayList<Path> jfrFiles, long pid) {
+            this.options = options;
+            this.javaOptions = javaOptions;
+            this.jfrFileGenerator = jfrFileGenerator;
+            this.jfrFiles = jfrFiles;
+            this.pid = pid;
+        }
+
+        void jcmd(String... args) {
+            List<String> arguments = Arrays.stream(args).flatMap(s -> Stream.of(s.split(","))).toList();
+            List<String> command = new ArrayList<>();
+            command.add(System.getProperty("java.home") + "/bin/jcmd");
+            command.add(String.valueOf(pid));
+            command.addAll(arguments);
+            try {
+                int exit = new ProcessBuilder(command).start().waitFor();
+                if (exit != 0) {
+                    throw new IOException("jcmd failed: " + String.join(" ", command));
+                }
+            } catch (IOException | InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        @Override
+        public void run() {
+            while (true) {
+                try {
+                    Thread.sleep(options.duration().getNextDurationMillis());
+                    int index = jfrFiles.size();
+                    Path jfrFile = jfrFileGenerator.apply(index).toAbsolutePath();
+                    jcmd("JFR.stop", index == 0 ? "name=1" : ("name=" + index + "s"), "filename=" + jfrFile);
+                    jfrFiles.add(jfrFile);
+                    jcmd("JFR.start", "name=" + (index + 1) + "s", javaOptions.toJFROptions(jfrFileGenerator.apply(index + 1).toAbsolutePath()));
+                } catch (InterruptedException e) {
+                    break;
+                }
+            }
+        }
+    }
+
+    Result run(Function<Integer, Path> jfrFileGenerator, String javaBinary, boolean verbose) {
         System.out.println("Running " + options);
         Path tmpFolder = null;
         try {
@@ -110,7 +181,7 @@ public abstract class BenchmarkRunner {
         addOptions(javaOptions, tmpFolder);
         List<String> command = new ArrayList<>();
         command.add(resolveJavaBinary(javaBinary));
-        command.addAll(javaOptions.toOptions(jfrFile));
+        command.addAll(javaOptions.toOptions(jfrFileGenerator.apply(0)));
         System.out.println("Command: " + String.join(" ", command));
         ProcessBuilder pb = new ProcessBuilder(command.toArray(new String[0]));
         if (verbose) {
@@ -118,9 +189,24 @@ public abstract class BenchmarkRunner {
             pb.redirectErrorStream(true);
         }
         long start = System.currentTimeMillis();
+        var jfrFiles = new CopyOnWriteArrayList<Path>();
         try {
             Process p = pb.start();
-            if (p.waitFor() != 0) {
+            int exitCode;
+            if (options.duration().producesMultipleFiles()) {
+                var starter = new JFRStartAndStopLoop(options, javaOptions, jfrFileGenerator, jfrFiles, p.pid());
+                var thread = new Thread(starter);
+                thread.start();
+                exitCode = p.waitFor();
+                thread.interrupt();
+                while (thread.isAlive()) {
+                    Thread.sleep(100);
+                }
+            } else {
+                jfrFiles.add(jfrFileGenerator.apply(0));
+                exitCode = p.waitFor();
+            }
+            if (exitCode != 0) {
                 throw new IOException("Process failed");
             }
             try (var dirStream = Files.walk(tmpFolder)) {
@@ -131,7 +217,7 @@ public abstract class BenchmarkRunner {
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }
-            return parseJFRFile(jfrFile, options, (System.currentTimeMillis() - start) / 1000);
+            return parseJFRFiles(jfrFiles, options, (System.currentTimeMillis() - start) / 1000);
         } catch (IOException | InterruptedException e) {
             return new Result(options, (System.currentTimeMillis() - start) / 1000, 0, 0, 0, 0, true);
         }

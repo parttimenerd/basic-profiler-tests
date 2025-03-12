@@ -2,26 +2,31 @@ package me.bechberger.ctest;
 
 import picocli.CommandLine;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.function.BiFunction;
+import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
-import static picocli.CommandLine.*;
+import static picocli.CommandLine.Command;
+import static picocli.CommandLine.Option;
 
 @Command(name = "ctest", mixinStandardHelpOptions = true, version = "1.0",
-description = "Starts a JFR recording and tests it with different scenarios.")
+        description = "Starts a JFR recording and tests it with different scenarios.")
 public class Main implements Runnable {
 
     static class JavaOptions {
-        private List<String> options = new ArrayList<>();
-        private List<String> jfrOptions = new ArrayList<>();
-        private List<String> jfrRecorderOptions = new ArrayList<>();
+        private final List<String> options = new ArrayList<>();
+        private final List<String> jfrOptions = new ArrayList<>();
+        private final List<String> jfrRecorderOptions = new ArrayList<>();
 
         public void addOption(String option) {
             options.add(option);
@@ -42,9 +47,13 @@ public class Main implements Runnable {
             }
             allOptions.add("-XX:+UnlockDiagnosticVMOptions");
             allOptions.add("-XX:+DebugNonSafepoints");
-            allOptions.add("-XX:StartFlightRecording=filename=" + jfrFile + "," + String.join(",", jfrOptions));
+            allOptions.add("-XX:StartFlightRecording=" + toJFROptions(jfrFile));
             allOptions.addAll(options);
             return allOptions;
+        }
+
+        String toJFROptions(Path jfrFile) {
+            return "filename=" + jfrFile + "," + String.join(",", jfrOptions);
         }
     }
 
@@ -57,11 +66,12 @@ public class Main implements Runnable {
     }
 
     enum Benchmark implements CSVValue {
-        RENAISSANCE(BenchmarkRunner.RenaissanceBenchmarkRunner::new),;
-       // DACAPO,
-       // CLASSUNLOAD(BenchmarkRunner.ClassUnloadTestRunner::new);
+        RENAISSANCE(BenchmarkRunner.RenaissanceBenchmarkRunner::new),
+        ;
+        // DACAPO,
+        // CLASSUNLOAD(BenchmarkRunner.ClassUnloadTestRunner::new);
 
-        private BiFunction<OptionSet, Integer, BenchmarkRunner> creator;
+        private final BiFunction<OptionSet, Integer, BenchmarkRunner> creator;
 
         Benchmark(BiFunction<OptionSet, Integer, BenchmarkRunner> creator) {
             this.creator = creator;
@@ -108,7 +118,7 @@ public class Main implements Runnable {
     enum GC implements OptionAdder, CSVValue {
         G1("G1GC"),
         ZGC("ZGC"),
-       // SHENANDOAH("ShenandoahGC"),
+        // SHENANDOAH("ShenandoahGC"),
         SERIAL("SerialGC"),
         PARALLEL("ParallelGC");
 
@@ -161,7 +171,8 @@ public class Main implements Runnable {
     List<MaxChunkSize> maxChunkSizes = List.of(MaxChunkSize.values());
 
     enum HeapSize implements OptionAdder {
-        DEFAULT(""),;
+        DEFAULT(""),
+        ;
         //ONE_GB("1g"),;
 
         public final String size;
@@ -185,7 +196,34 @@ public class Main implements Runnable {
     @Option(names = {"-H", "--heap-sizes"}, description = "The heap sizes to use. Possible values: ${COMPLETION-CANDIDATES}", split = ",")
     List<HeapSize> heapSizes = List.of(HeapSize.values());
 
-    record OptionSet(Benchmark benchmark, Sampler sampler, GC gc, MaxChunkSize maxChunkSize, HeapSize heapSize) implements OptionAdder {
+    enum JFRDuration {
+        FULL(() -> Long.MAX_VALUE),
+        SHORT(() -> 10_000L),
+        MEDIUM(() -> 60_000L),
+        TINY(() -> 1_000L),
+        RANDOM(() -> (long) (Math.random() * 60_000)),
+        RANDOM_SHORT(() -> (long) (Math.random() * 10_000));
+
+        private final Supplier<Long> durationMillis;
+
+        JFRDuration(Supplier<Long> durationMillis) {
+            this.durationMillis = durationMillis;
+        }
+
+        long getNextDurationMillis() {
+            return durationMillis.get();
+        }
+
+        boolean producesMultipleFiles() {
+            return this != FULL;
+        }
+    }
+
+    @Option(names = {"-d", "--durations"}, description = "Duration of the recordings, recordings will be repeated till the benchmark ends. Possible values: ${COMPLETION-CANDIDATES}")
+    List<JFRDuration> jfrDurations = List.of(JFRDuration.values());
+
+    record OptionSet(Benchmark benchmark, Sampler sampler, GC gc, MaxChunkSize maxChunkSize, HeapSize heapSize,
+                     JFRDuration duration) implements OptionAdder {
         @Override
         public void addOption(JavaOptions options) {
             sampler.addOption(options);
@@ -195,25 +233,27 @@ public class Main implements Runnable {
         }
 
         public List<String> toCSV() {
-            return List.of(benchmark.toCSVValue(), sampler.toCSVValue(), gc.toCSVValue(), maxChunkSize.toCSVValue(), heapSize.toCSVValue());
+            return List.of(benchmark.toCSVValue(), sampler.toCSVValue(), gc.toCSVValue(), maxChunkSize.toCSVValue(), heapSize.toCSVValue(), duration.name().toLowerCase());
         }
 
         public static List<String> toCSVHeader() {
-            return List.of("benchmark", "sampler", "gc", "max chunk size", "heap size");
+            return List.of("benchmark", "sampler", "gc", "max chunk size", "heap size", "duration");
         }
     }
 
-    /**'
+    /**
+     * '
      * Generates all possible combinations of the options
+     *
      * @return a stream of all possible option sets
      */
     Stream<OptionSet> optionSets() {
-        Stream<OptionSet> optionSetStream = benchmarks.stream().flatMap(benchmark ->
+        Stream<OptionSet> optionSetStream = jfrDurations.stream().flatMap(d -> benchmarks.stream().flatMap(benchmark ->
                 samplers.stream().flatMap(sampler ->
                         gcs.stream().flatMap(gc ->
                                 maxChunkSizes.stream().flatMap(maxChunkSize ->
                                         heapSizes.stream().map(heapSize ->
-                                                new OptionSet(benchmark, sampler, gc, maxChunkSize, heapSize))))));
+                                                new OptionSet(benchmark, sampler, gc, maxChunkSize, heapSize, d)))))));
         return IntStream.range(0, runs == -1 ? Integer.MAX_VALUE : runs).mapToObj(i -> optionSetStream).flatMap(s -> s);
     }
 
@@ -244,10 +284,47 @@ public class Main implements Runnable {
     void run(OptionSet options) {
         var runner = options.benchmark.createRunner(options, iterations);
         try {
-            var jfrFile = Path.of(jfrFolder, String.join("_", options.toCSV()) + "_" + System.currentTimeMillis() + ".jfr");
-            var result = runner.run(jfrFile, java, verbose);
+            Function<Integer, Path> jfrFileGenerator;
+            Path generatedFileOrFolder;
+            String prefix = String.join("_", options.toCSV()).replace(' ', '-') + "_" + System.currentTimeMillis();
+            if (options.duration.producesMultipleFiles()) {
+                var baseFolder = Path.of(jfrFolder, prefix);
+                Files.createDirectories(baseFolder);
+                jfrFileGenerator = i -> baseFolder.resolve(i + ".jfr");
+                generatedFileOrFolder = baseFolder;
+            } else {
+                jfrFileGenerator = i -> {
+                    if (i != 0) {
+                        throw new IllegalArgumentException("Only one file expected");
+                    }
+                    return Path.of(jfrFolder, prefix + ".jfr");
+                };
+                generatedFileOrFolder = Path.of(jfrFolder, prefix + ".jfr");
+            }
+            Runnable deleteAction = () -> {
+                if (options.duration.producesMultipleFiles()) {
+                    try (var dirStream = Files.walk(generatedFileOrFolder)) {
+                        dirStream
+                                .map(Path::toFile)
+                                .sorted(Comparator.reverseOrder())
+                                .forEach(File::delete);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                } else {
+                    try {
+                        Files.deleteIfExists(generatedFileOrFolder);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+            };
+            var shutdownHook = new Thread(deleteAction);
+            Runtime.getRuntime().addShutdownHook(shutdownHook);
+            var result = runner.run(jfrFileGenerator, java, verbose);
             if (!keepJfr) {
-                Files.deleteIfExists(jfrFile);
+                deleteAction.run();
+                Runtime.getRuntime().removeShutdownHook(shutdownHook);
             }
             if (verbose) {
                 System.out.println("Finished: " + options);
