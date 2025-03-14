@@ -248,13 +248,13 @@ public class Main implements Runnable {
      * @return a stream of all possible option sets
      */
     Stream<OptionSet> optionSets() {
-        Stream<OptionSet> optionSetStream = jfrDurations.stream().flatMap(d -> benchmarks.stream().flatMap(benchmark ->
+        Supplier<Stream<OptionSet>> optionSetStream = () -> jfrDurations.stream().flatMap(d -> benchmarks.stream().flatMap(benchmark ->
                 samplers.stream().flatMap(sampler ->
                         gcs.stream().flatMap(gc ->
                                 maxChunkSizes.stream().flatMap(maxChunkSize ->
                                         heapSizes.stream().map(heapSize ->
                                                 new OptionSet(benchmark, sampler, gc, maxChunkSize, heapSize, d)))))));
-        return IntStream.range(0, runs == -1 ? Integer.MAX_VALUE : runs).mapToObj(i -> optionSetStream).flatMap(s -> s);
+        return IntStream.range(0, runs == -1 ? Integer.MAX_VALUE : runs).mapToObj(i -> optionSetStream).flatMap(Supplier::get);
     }
 
     @Option(names = {"-i", "--iterations"}, description = "The number of iterations to run the benchmarks (for renaisance and dacapo, -1 for default).")

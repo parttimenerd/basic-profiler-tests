@@ -72,21 +72,23 @@ public abstract class BenchmarkRunner {
         int validCpuTimeEvents = 0;
         int overflowedCpuTimeEvents = 0;
         int emptyCpuTimeEvents = 0;
+        int errors = 0;
         for (var jfrFile : jfrFiles) {
             var result = parseJFRFile(jfrFile, options, duration);
             if (result.error) {
-                return new Result(options, duration, 0, 0, 0, 0, true);
+                errors++;
             }
             otherSamplerEvents += result.otherSamplerEvents;
             validCpuTimeEvents += result.validCpuTimeEvents;
             overflowedCpuTimeEvents += result.overflowedCpuTimeEvents;
             emptyCpuTimeEvents += result.emptyCpuTimeEvents;
         }
-        return new Result(options, duration, otherSamplerEvents, validCpuTimeEvents, overflowedCpuTimeEvents, emptyCpuTimeEvents, false);
+        return new Result(options, duration, otherSamplerEvents, validCpuTimeEvents, overflowedCpuTimeEvents, emptyCpuTimeEvents, errors == jfrFiles.size());
     }
 
     Result parseJFRFile(Path jfrFile, Main.OptionSet options, long duration) {
         if (!Files.exists(jfrFile)) {
+            System.err.println("File " + jfrFile + " does not exist");
             return new Result(options, 0, 0, 0, 0, 0, true);
         }
         int otherSamplerEvents = 0;
@@ -94,6 +96,10 @@ public abstract class BenchmarkRunner {
         int overflowedCpuTimeEvents = 0;
         int emptyCpuTimeEvents = 0;
         try {
+            if (Files.size(jfrFile) == 0) {
+                System.err.println("File " + jfrFile + " is empty");
+                return new Result(options, 0, 0, 0, 0, 0, true);
+            }
             for (var event : RecordingFile.readAllEvents(jfrFile)) {
                 if (event.getEventType().getName().equals("jdk.CPUTimeSample")) {
                     if (event.getStackTrace() != null && !event.getStackTrace().getFrames().isEmpty()) {
@@ -109,6 +115,7 @@ public abstract class BenchmarkRunner {
             }
             return new Result(options, duration, otherSamplerEvents, validCpuTimeEvents, overflowedCpuTimeEvents, emptyCpuTimeEvents, false);
         } catch (IOException e) {
+            e.printStackTrace();
             return new Result(options, duration, otherSamplerEvents, validCpuTimeEvents, overflowedCpuTimeEvents, emptyCpuTimeEvents, true);
         }
     }
@@ -135,7 +142,7 @@ public abstract class BenchmarkRunner {
             this.pid = pid;
         }
 
-        void jcmd(String... args) {
+        void jcmd(String... args) throws InterruptedException, IOException{
             List<String> arguments = Arrays.stream(args).flatMap(s -> Stream.of(s.split(","))).toList();
             List<String> command = new ArrayList<>();
             command.add(System.getProperty("java.home") + "/bin/jcmd");
@@ -146,8 +153,8 @@ public abstract class BenchmarkRunner {
                 if (exit != 0) {
                     throw new IOException("jcmd failed: " + String.join(" ", command));
                 }
-            } catch (IOException | InterruptedException e) {
-                throw new RuntimeException(e);
+            } catch (InterruptedException e) {
+                throw e;
             }
         }
 
@@ -155,13 +162,14 @@ public abstract class BenchmarkRunner {
         public void run() {
             while (true) {
                 try {
-                    Thread.sleep(options.duration().getNextDurationMillis());
+                    var sleep = options.duration().getNextDurationMillis();
+                    Thread.sleep(sleep);
                     int index = jfrFiles.size();
                     Path jfrFile = jfrFileGenerator.apply(index).toAbsolutePath();
                     jcmd("JFR.stop", index == 0 ? "name=1" : ("name=" + index + "s"), "filename=" + jfrFile);
                     jfrFiles.add(jfrFile);
                     jcmd("JFR.start", "name=" + (index + 1) + "s", javaOptions.toJFROptions(jfrFileGenerator.apply(index + 1).toAbsolutePath()));
-                } catch (InterruptedException e) {
+                } catch (InterruptedException | IOException e) {
                     break;
                 }
             }
@@ -206,9 +214,6 @@ public abstract class BenchmarkRunner {
                 jfrFiles.add(jfrFileGenerator.apply(0));
                 exitCode = p.waitFor();
             }
-            if (exitCode != 0) {
-                throw new IOException("Process failed");
-            }
             try (var dirStream = Files.walk(tmpFolder)) {
                 dirStream
                         .map(Path::toFile)
@@ -217,8 +222,12 @@ public abstract class BenchmarkRunner {
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }
+            if (exitCode != 0) {
+              //  throw new IOException("Process failed");
+            }
             return parseJFRFiles(jfrFiles, options, (System.currentTimeMillis() - start) / 1000);
         } catch (IOException | InterruptedException e) {
+            e.printStackTrace();
             return new Result(options, (System.currentTimeMillis() - start) / 1000, 0, 0, 0, 0, true);
         }
 
