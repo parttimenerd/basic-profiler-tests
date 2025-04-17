@@ -90,15 +90,20 @@ public class Main implements Runnable {
     @Option(names = {"-b", "--benchmark"}, description = "The benchmarks to run. Possible values: ${COMPLETION-CANDIDATES}", split = ",")
     List<Benchmark> benchmarks = List.of(Benchmark.values());
 
+    private static final String CPU_TIME_SAMPLE_CONFIG = "jdk.CPUTimeSample#enabled=true,jdk.CPUTimeSample#throttle=1ms";
+    private static final String STANDARD_JFR_SAMPLE_CONFIG = "jdk.ExecutionSample#enabled=true,jdk.ExecutionSample#period=1ms,jdk.NativeMethodSample#enabled=true,jdk.NativeMethodSample#period=1ms";
+
     enum Sampler implements OptionAdder, CSVValue {
-        CPU_ONLY("jdk.CPUTimeSample#enabled=true,jdk.CPUTimeSample#throttle=1ms"),
-        WITH_OTHER_SAMPLER("jdk.CPUTimeSample#enabled=true,jdk.CPUTimeSample#throttle=1ms,jdk.ExecutionSample#enabled=true,jdk.ExecutionSample#period=1ms,jdk.NativeMethodSample#enabled=true,jdk.NativeMethodSample#period=1ms"),
-        FULL_PROFILE("settings=profile.jfc,jdk.CPUTimeSample#enabled=true,jdk.CPUTimeSample#throttle=1ms,jdk.ExecutionSample#enabled=true,jdk.ExecutionSample#period=1ms,jdk.NativeMethodSample#enabled=true,jdk.NativeMethodSample#period=1ms");
+        CPU_ONLY(CPU_TIME_SAMPLE_CONFIG),
+        OTHER_SAMPLER(STANDARD_JFR_SAMPLE_CONFIG),
+        WITH_OTHER_SAMPLER(CPU_TIME_SAMPLE_CONFIG, STANDARD_JFR_SAMPLE_CONFIG),
+        FULL_PROFILE("settings=profile.jfc", CPU_TIME_SAMPLE_CONFIG, STANDARD_JFR_SAMPLE_CONFIG);
+
 
         public final String config;
 
-        Sampler(String config) {
-            this.config = config;
+        Sampler(String... config) {
+            this.config = String.join(",", config);
         }
 
         @Override
