@@ -8,11 +8,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -228,7 +230,7 @@ public class Main implements Runnable {
     List<JFRDuration> jfrDurations = List.of(JFRDuration.values());
 
     record OptionSet(Benchmark benchmark, Sampler sampler, GC gc, MaxChunkSize maxChunkSize, HeapSize heapSize,
-                     JFRDuration duration) implements OptionAdder {
+                     JFRDuration duration, boolean randomizeOrder) implements OptionAdder {
         @Override
         public void addOption(JavaOptions options) {
             sampler.addOption(options);
@@ -258,8 +260,15 @@ public class Main implements Runnable {
                         gcs.stream().flatMap(gc ->
                                 maxChunkSizes.stream().flatMap(maxChunkSize ->
                                         heapSizes.stream().map(heapSize ->
-                                                new OptionSet(benchmark, sampler, gc, maxChunkSize, heapSize, d)))))));
-        return IntStream.range(0, runs == -1 ? Integer.MAX_VALUE : runs).mapToObj(i -> optionSetStream).flatMap(Supplier::get);
+                                                new OptionSet(benchmark, sampler, gc, maxChunkSize, heapSize, d, randomBenchmarkOrder)))))));
+        return IntStream.range(0, runs == -1 ? Integer.MAX_VALUE : runs).mapToObj(i -> {
+            if (randomConfigOrder) {
+                var optionSetList = optionSetStream.get().collect(Collectors.toCollection(ArrayList::new));
+                Collections.shuffle(optionSetList);
+                return optionSetList.stream();
+            }
+            return optionSetStream.get();
+        }).flatMap(s -> s);
     }
 
     @Option(names = {"-i", "--iterations"}, description = "The number of iterations to run the benchmarks (for renaisance and dacapo, -1 for default).")
@@ -285,6 +294,12 @@ public class Main implements Runnable {
 
     @Option(names = "--java", description = "The java executable to use.")
     String java = "java";
+
+    @Option(names = "--random-benchmark-order", description = "Randomize the order of the renaissance benchmarks")
+    boolean randomBenchmarkOrder = false;
+
+    @Option(names = "--random-config-order", description = "Randomize the order of the configs")
+    boolean randomConfigOrder = false;
 
     void run(OptionSet options) {
         var runner = options.benchmark.createRunner(options, iterations);

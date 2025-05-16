@@ -2,17 +2,17 @@ package me.bechberger.ctest;
 
 import jdk.jfr.consumer.RecordingFile;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public abstract class BenchmarkRunner {
@@ -242,14 +242,39 @@ public abstract class BenchmarkRunner {
         @Override
         void addOptions(Main.JavaOptions javaOptions, Path tmpFolder) {
             javaOptions.addOption("-jar");
-            javaOptions.addOption(downloadIfNeeded("renaissance.jar", "https://github.com/renaissance-benchmarks/renaissance/releases/download/v0.16.0/renaissance-gpl-0.16.0.jar").toString());
-            javaOptions.addOption("all");
+            Path renaissanceJar = downloadIfNeeded("renaissance.jar", "https://github.com/renaissance-benchmarks/renaissance/releases/download/v0.16.0/renaissance-gpl-0.16.0.jar");
+            javaOptions.addOption(renaissanceJar.toString());
+            if (options.randomizeOrder()) {
+                List<String> benchmarks = getBenchmarks(renaissanceJar);
+                Collections.shuffle(benchmarks);
+                benchmarks.forEach(javaOptions::addOption);
+            } else {
+                javaOptions.addOption("all");
+            }
             if (iterations != -1) {
                 javaOptions.addOption("-r");
                 javaOptions.addOption(String.valueOf(iterations));
             }
             javaOptions.addOption("--scratch-base");
             javaOptions.addOption(tmpFolder.toString());
+        }
+
+        private List<String> getBenchmarks(Path renaissancePath) {
+            // call renaissance.jar --raw-list and parse the output
+            try {
+                ProcessBuilder pb = new ProcessBuilder("java", "-jar", renaissancePath.toString(), "--raw-list");
+                pb.redirectErrorStream(true);
+                Process p = pb.start();
+                List<String> benchmarks;
+                try (var reader = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                    benchmarks = reader.lines().filter(l -> !l.isEmpty() && l.matches("[a-zA-Z-0-9]+")).collect(Collectors.toCollection(ArrayList::new));
+                }
+                p.waitFor();
+                return benchmarks;
+            } catch (IOException | InterruptedException e) {
+                e.printStackTrace();
+                throw new RuntimeException(e);
+            }
         }
     }
 }
