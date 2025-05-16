@@ -289,8 +289,14 @@ public class Main implements Runnable {
     @Option(names = {"-a", "--append-csv"}, description = "Append to the CSV file instead of overwriting it.")
     boolean appendCsv = false;
 
-    @Option(names = {"-v", "--verbose"}, description = "Print all program outputs")
-    boolean verbose = false;
+    enum Verbosity {
+        SILENT,
+        ALL,
+        ALL_WITH_TIMESTAMPS
+    }
+
+    @Option(names = {"-v", "--verbose"}, description = "Print all program outputs. Possible values: ${COMPLETION-CANDIDATES}")
+    Verbosity verbose = Verbosity.SILENT;
 
     @Option(names = "--java", description = "The java executable to use.")
     String java = "java";
@@ -346,7 +352,7 @@ public class Main implements Runnable {
                 deleteAction.run();
                 Runtime.getRuntime().removeShutdownHook(shutdownHook);
             }
-            if (verbose) {
+            if (verbose != Verbosity.SILENT) {
                 System.out.println("Finished: " + options);
             }
             if (!result.isReasonable()) {

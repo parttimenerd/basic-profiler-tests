@@ -30,15 +30,22 @@ mvn package
 java -jar target/basic-profiler-tests.jar
 ```
 
+I typically run the tests like this:
+
+```bash
+java -jar target/basic-profiler-tests.jar --csv-file log.csv --append-csv --runs=-1 --verbose=ALL_WITH_TIMESTAMPS --random-benchmark-order --random-config-order
+```
+
 Options via `--help`:
 
 ```sh
-Usage: ctest [-ahvV] [--keep-jfr] [--csv-file=<csvFile>] [-i=<iterations>]
+Usage: ctest [-ahV] [--keep-jfr] [--random-benchmark-order]
+             [--random-config-order] [--csv-file=<csvFile>] [-i=<iterations>]
              [--java=<java>] [--jfr-folder=<jfrFolder>] [--runs=<runs>]
-             [-b=<benchmarks>[,<benchmarks>...]]... [-d=<jfrDurations>]...
-             [-g=<gcs>[,<gcs>...]]... [-H=<heapSizes>[,<heapSizes>...]]...
-             [-m=<maxChunkSizes>[,<maxChunkSizes>...]]... [-s=<samplers>[,
-             <samplers>...]]...
+             [-v=<verbose>] [-b=<benchmarks>[,<benchmarks>...]]...
+             [-d=<jfrDurations>]... [-g=<gcs>[,<gcs>...]]... [-H=<heapSizes>[,
+             <heapSizes>...]]... [-m=<maxChunkSizes>[,<maxChunkSizes>...]]...
+             [-s=<samplers>[,<samplers>...]]...
 Starts a JFR recording and tests it with different scenarios.
   -a, --append-csv           Append to the CSV file instead of overwriting it.
   -b, --benchmark=<benchmarks>[,<benchmarks>...]
@@ -64,15 +71,17 @@ Starts a JFR recording and tests it with different scenarios.
   -m, --max-chunk-sizes=<maxChunkSizes>[,<maxChunkSizes>...]
                              The max chunk sizes to use. Possible values:
                                ONE_MB, DEFAULT
+      --random-benchmark-order
+                             Randomize the order of the renaissance benchmarks
+      --random-config-order  Randomize the order of the configs
       --runs=<runs>          The number of runs of the whole suite, -1 for
                                infinite runs.
   -s, --samplers=<samplers>[,<samplers>...]
                              The sampler configs to use. Possible values:
                                CPU_ONLY, OTHER_SAMPLER, WITH_OTHER_SAMPLER,
                                FULL_PROFILE
-  -v, --verbose              Print all program outputs
+  -v, --verbose=<verbose>    Print all program outputs
   -V, --version              Print version information and exit.
-
 ```
 
 

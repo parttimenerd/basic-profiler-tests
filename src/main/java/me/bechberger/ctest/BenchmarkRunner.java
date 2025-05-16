@@ -2,13 +2,12 @@ package me.bechberger.ctest;
 
 import jdk.jfr.consumer.RecordingFile;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Instant;
+import java.time.LocalTime;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
@@ -176,7 +175,29 @@ public abstract class BenchmarkRunner {
         }
     }
 
-    Result run(Function<Integer, Path> jfrFileGenerator, String javaBinary, boolean verbose) {
+    static class OutputStreamTimestampPrinterThread extends Thread {
+        private final InputStream inputStream;
+        private final PrintStream outputStream;
+
+        public OutputStreamTimestampPrinterThread(InputStream inputStream, PrintStream outputStream) {
+            this.inputStream = inputStream;
+            this.outputStream = outputStream;
+            this.setDaemon(true);
+        }
+
+        @Override
+        public void run() {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    outputStream.printf("[%s] %s%n", LocalTime.now().toString().substring(11, 19), line);
+                }
+            } catch (IOException e) {
+            }
+        }
+    }
+
+    Result run(Function<Integer, Path> jfrFileGenerator, String javaBinary, Main.Verbosity verbosity) {
         System.out.println("Running " + options);
         Path tmpFolder = null;
         try {
@@ -192,14 +213,25 @@ public abstract class BenchmarkRunner {
         command.addAll(javaOptions.toOptions(jfrFileGenerator.apply(0)));
         System.out.println("Command: " + String.join(" ", command));
         ProcessBuilder pb = new ProcessBuilder(command.toArray(new String[0]));
-        if (verbose) {
-            pb.inheritIO();
-            pb.redirectErrorStream(true);
+        if (verbosity != Main.Verbosity.SILENT) {
+            if (verbosity == Main.Verbosity.ALL) {
+                pb.inheritIO();
+            } else {
+                // print stdout and stderr to System.out and System.err
+                // but also print a timestamp in from of every line: "[HH:mm:ss] "
+                pb.redirectOutput(ProcessBuilder.Redirect.PIPE);
+                pb.redirectError(ProcessBuilder.Redirect.PIPE);
+                pb.redirectErrorStream(true);
+            }
         }
         long start = System.currentTimeMillis();
         var jfrFiles = new CopyOnWriteArrayList<Path>();
         try {
             Process p = pb.start();
+            if (verbosity == Main.Verbosity.ALL_WITH_TIMESTAMPS) {
+                new OutputStreamTimestampPrinterThread(p.getInputStream(), System.out).start();
+                new OutputStreamTimestampPrinterThread(p.getErrorStream(), System.err).start();
+            }
             int exitCode;
             if (options.duration().producesMultipleFiles()) {
                 var starter = new JFRStartAndStopLoop(options, javaOptions, jfrFileGenerator, jfrFiles, p.pid());
